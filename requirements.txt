@@ -1,0 +1,9 @@
+python-dotenv
+langsmith
+openai
+jupyter
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+beautifulsoup4

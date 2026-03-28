@@ -1,125 +1,150 @@
-# Chatbot evaluation with LangSmith
+# RAG & chatbot evaluation with LangSmith
 
-This project is a **small lab notebook** that checks how well a simple OpenAI chatbot answers fixed questions. It uses **LangSmith** to store test questions, run the bot on each one, and score the answers with automatic metrics.
-
-You do **not** need a separate “RAG” index here—the focus is on **evaluation**: dataset → model → scores in the LangSmith UI.
+This repo is a **single Jupyter notebook** that shows how to **evaluate LLM apps with [LangSmith](https://smith.langchain.com)**: first a plain chatbot, then a **retrieval-augmented** bot with richer metrics.
 
 ---
 
-## What you need
+## What’s in the notebook
 
-- Python 3 with Jupyter (or VS Code / Cursor with notebook support)
-- A **LangSmith** account and API key ([LangSmith](https://smith.langchain.com))
-- An **OpenAI** API key
+| Part | What it does |
+|------|----------------|
+| **Environment** | Loads API keys, enables LangSmith tracing. |
+| **Chatbot dataset** | Creates or reuses a LangSmith dataset (`MychatBot`) with Q&A gold answers. |
+| **Simple evaluators** | `correctness` (LLM judge) and `concision` (length vs reference). |
+| **Simple app** | `my_app` + `ls_target` → `client.evaluate` on `MychatBot`. |
+| **RAG pipeline** | Load web pages → chunk → embed → `InMemoryVectorStore` → retriever. |
+| **`rag_bot`** | Retrieves docs, calls `gpt-4o-mini`, returns `{"answer", "documents"}`. |
+| **RAG dataset** | Separate dataset (`rag_dataset_name`, e.g. `"Sahil Dataset name"`) with agent-themed Q&A. |
+| **RAG evaluators** | Correctness vs reference, relevance to question, groundedness vs retrieved text, retrieval relevance. |
+| **RAG evaluation** | `rag_target` + `client.evaluate(..., data=rag_dataset_name, ...)`. |
 
-Install packages (example):
+Run sections **in order** the first time: later cells depend on `client`, `retriever`, `llm`, `rag_bot`, and evaluator definitions.
+
+---
+
+## Requirements
+
+- **Python 3.10+** (3.13 is fine)
+- **[LangSmith](https://smith.langchain.com)** account and API key
+- **[OpenAI](https://platform.openai.com/)** API key (chat + embeddings)
+
+Install dependencies:
 
 ```bash
-pip install python-dotenv langsmith openai jupyter
+pip install -r requirements.txt
 ```
+
+Or manually: `python-dotenv`, `langsmith`, `openai`, `jupyter`, `langchain-core`, `langchain-community`, `langchain-openai`, `langchain-text-splitters`, and **`beautifulsoup4`** (needed for `WebBaseLoader` HTML parsing).
 
 ---
 
 ## Configuration (`.env`)
 
-Create a `.env` file in this folder (do **not** commit real keys to git):
+Create `.env` in the project root. **Do not commit real keys.**
 
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | Used by the OpenAI client (preferred name) |
-| `OPEN_API_KEY` | Optional fallback—the notebook copies this to `OPENAI_API_KEY` if the standard name is missing |
-| `LANGSMITH_API_KEY` | Lets the notebook talk to LangSmith |
+| `OPENAI_API_KEY` | OpenAI SDK (preferred). |
+| `OPEN_API_KEY` | Optional alias; the notebook maps it to `OPENAI_API_KEY` if the standard name is empty. |
+| `LANGSMITH_API_KEY` | LangSmith API access. |
 
-The first notebook cell also turns on tracing with `LANGSMITH_TRACING=true` so runs can show up in LangSmith.
+The notebook sets `LANGSMITH_TRACING=true` so runs and LLM calls can appear in LangSmith.
 
 ---
 
-## How the notebook is organized
+## Notebook map (high level)
 
-Open **`rag-evaluation.ipynb`** and run cells **from top to bottom** after setting `.env`.
+1. **Cell 0** — `load_dotenv`, set `OPENAI_API_KEY` and LangSmith env vars.  
+2. **Cells 1–6** — Chatbot baseline: dataset **get-or-create** (avoids 409 if the name already exists), evaluators, `my_app`, `ls_target`, `evaluate` on `dataset_name` (`MychatBot`).  
+3. **Cells 7–11** — RAG: `USER_AGENT` for HTTP, `WebBaseLoader`, splitters, embeddings, `retriever`, `init_chat_model`, `@traceable` `rag_bot`.  
+4. **Cell 12** — RAG examples dataset: **get-or-create** by `rag_dataset_name`, `create_examples`.  
+5. **Cells 14–17** — RAG evaluators (structured outputs via `init_chat_model` + JSON schema).  
+6. **Cell 18** — `rag_target(inputs) → rag_bot(inputs["question"])`, `evaluate` with `data=rag_dataset_name`.
 
-### 1. Load keys and environment
+**Important:** `groundedness` and `retrieval_relevance` read retrieved text from **`outputs["documents"]`** (what `rag_bot` returns), not from dataset inputs.
 
-- Loads `.env` with `dotenv`.
-- Puts API keys into `os.environ` so `openai.OpenAI()` and `langsmith.Client()` work automatically.
+---
 
-### 2. Create a dataset in LangSmith
+## Datasets and 409 conflicts
 
-- Builds a **LangSmith Client** and a dataset named `MychatBot` (change the name if you want a new dataset).
-- Adds **examples**: each row has:
-  - **inputs**: e.g. `{"question": "..."}`
-  - **outputs**: a **reference answer** (“gold” text you consider a good answer for grading).
+LangSmith dataset names are **unique per workspace**. The notebook uses:
 
-**Note:** Running this cell again may try to create the same dataset again. If the dataset already exists, you might need to skip this cell or use a new dataset name—otherwise you can get errors from LangSmith.
+- `try: create_dataset(...) except LangSmithConflictError: read_dataset(dataset_name=...)`
 
-### 3. Custom metrics (evaluators)
+so re-running a dataset cell does not crash with **409 Conflict**.
 
-Evaluators are plain Python functions LangSmith calls with three dictionaries:
+**Caveat:** `create_examples` **appends** rows. Re-running that part repeatedly duplicates examples unless you skip it or clean the dataset in the UI.
 
-- `inputs` — the question (and anything else you put in the example’s inputs)
-- `outputs` — what **your app** returned for that row
-- `reference_outputs` — the gold answer from the dataset
+---
 
-**Correctness (LLM as judge)**  
-Another model (`gpt-4o-mini`) reads the question, your answer, and the reference. It replies YES or NO following the system instructions (correct/helpful vs wrong/off-topic). The code turns that into `True` / `False`, which LangSmith shows as **1** or **0**.
+## Evaluators (quick reference)
 
-**Concision**  
-Measures how **short** the answer is compared to the reference, as a score from **0 to 1**: if the model answer is much longer than the reference, the score goes down; if it’s similar length or shorter, the score stays high.
+**Chatbot track**
 
-The OpenAI client is wrapped with `langsmith.wrappers.wrap_openai` so those API calls can be traced in LangSmith.
+- **Correctness** — LLM compares model answer to reference; boolean → score 0/1 in LangSmith.  
+- **Concision** — Float 0–1 from reference vs prediction word counts (`min(1, ref_words / pred_words)`).
 
-### 4. The app under test: `my_app`
+**RAG track**
 
-- Takes a **question string**, calls the chat API with a system prompt, and returns the assistant’s **text** only.
-- This is the “product” you are evaluating.
+- **Correctness** — Answer vs gold reference (structured grader).  
+- **Relevance** — Answer vs user question.  
+- **Groundedness** — Answer supported by **retrieved** `Document.page_content`.  
+- **Retrieval relevance** — Retrieved chunks relevant to the question.
 
-### 5. Adapter: `ls_target`
-
-LangSmith expects a function that receives **`inputs`** (a dict, e.g. `{"question": "..."}`) and returns **`outputs`** as a dict.
-
-Here it returns `{"answer": ...}` so the keys match the reference format (`answer`) and the evaluators can read `outputs["answer"]`.
-
-### 6. Run the evaluation
-
-`client.evaluate(...)`:
-
-- Runs `ls_target` on **every row** of the dataset `MychatBot`.
-- Runs **correctness** and **concision** on each run.
-- Prints a link to an **experiment** in the LangSmith UI (latency, tokens, scores, side‑by‑side comparison).
+Evaluators use the LangSmith signature **`(inputs, outputs, reference_outputs)`** (some allow optional `reference_outputs`).
 
 ---
 
 ## Reading results in LangSmith
 
-In the experiment view you typically see:
+Open the **experiment** link printed after `evaluate`. You’ll see:
 
-- **Inputs** — the question  
-- **Reference outputs** — your gold answer  
-- **Outputs** — what `my_app` actually said  
-- **correctness** — average reflects how often the judge said YES  
-- **concision** — average reflects typical brevity vs reference  
-- **Latency / tokens / cost** — from traced OpenAI calls  
+- Inputs, reference outputs, model outputs  
+- Per-evaluator scores and aggregates  
+- Latency, tokens, and cost when calls are traced  
 
-Low correctness often means the judge is strict or the reference doesn’t match how you want the real model to answer (e.g. short marketing lines vs long factual replies). You can change the judge prompt or the reference answers to match your goals.
+If scores look “too low,” check whether **references** match how you want the model to behave (e.g. short marketing copy vs long factual answers) and whether judges’ prompts are too strict.
 
 ---
 
-## Files in this repo
+## Troubleshooting
+
+| Issue | What to check |
+|-------|----------------|
+| `OPENAI_API_KEY` / 401 | Key in `.env`; run the env cell before OpenAI calls. |
+| `gpt-40-mini` or model 404 | Model id is **`gpt-4o-mini`** (letter **o**, not zero **0**). |
+| `ModuleNotFoundError: bs4` | `pip install beautifulsoup4`. |
+| `USER_AGENT` warning | RAG cell sets a default `USER_AGENT` for `WebBaseLoader`. |
+| `NameError` on evaluators | Run evaluator cells **before** the final `evaluate` cell. |
+| `409` on dataset create | Should be handled by get-or-create; use a new name if you want a fresh dataset. |
+| `inputs` vs `input` | Target and evaluators must use the parameter name **`inputs`** and match keys (`question`, `answer`). |
+
+---
+
+## Files
 
 | File | Role |
 |------|------|
-| `rag-evaluation.ipynb` | All code: setup, dataset, evaluators, app, `evaluate` |
-| `.env` | Your secrets (local only) |
-| `README.md` | This explanation |
+| `rag-evaluation.ipynb` | Full workflow: env, datasets, apps, RAG, evaluators, experiments. |
+| `requirements.txt` | Pinned-style list of Python dependencies. |
+| `.env` | Secrets (local only; keep out of git). |
+| `README.md` | This guide. |
 
 ---
 
-## Quick glossary
+## Glossary
 
-- **Dataset** — A table of test cases in LangSmith (inputs + optional reference outputs).  
-- **Example** — One row in that table.  
-- **Experiment** — One full pass: run your function on every example and attach evaluator scores.  
-- **Evaluator** — A function that scores one run (correctness, concision, etc.).  
-- **LLM-as-judge** — Using a second model to label quality instead of hand-written code only.
+- **Dataset** — Named collection of examples (inputs + optional reference outputs) in LangSmith.  
+- **Example** — One row in a dataset.  
+- **Experiment** — One evaluation run over a dataset with a target function and evaluators.  
+- **Evaluator** — Function that scores a single prediction (often returns `bool`, `float`, or a dict with `score`).  
+- **LLM-as-judge** — Using a model with a rubric (or structured schema) to grade outputs.  
+- **RAG** — Retrieve context from a vector store, then generate an answer conditioned on that context.
 
-If you want to extend this later, common next steps are: more examples, multiple models, or swapping `my_app` for a real RAG pipeline while keeping the same `ls_target` shape and evaluators.
+---
+
+## Links
+
+- [LangSmith docs](https://docs.smith.langchain.com/)  
+- [LangSmith evaluation guide](https://docs.smith.langchain.com/evaluation)  
+- [OpenAI API](https://platform.openai.com/docs)
