@@ -109,6 +109,32 @@ If scores look “too low,” check whether **references** match how you want th
 
 ---
 
+## Safety & guardrails (in this repo)
+
+The notebook includes an optional layer using the **[OpenAI Moderation API](https://platform.openai.com/docs/guides/moderation)** (same API key, no extra package):
+
+- **Before RAG/LLM** — If the user question is flagged, `rag_bot` returns a fixed refusal and **does not** retrieve or generate (saves cost and avoids feeding toxic prompts into the stack).
+- **After generation** — If the model answer is flagged, it is **replaced** with the same refusal message.
+- **Toggle** — Set `USE_OPENAI_MODERATION = False` in the guardrails cell to turn this off (e.g. for debugging).
+- **Tracing** — When something is blocked, the returned dict may include a `guardrails` field with `input_blocked` / `output_blocked` and category names for logging in LangSmith.
+
+The system prompt also reminds the model to refuse illegal or clearly harmful requests (not a substitute for automated checks).
+
+**Other options you can add later (not wired in the notebook):**
+
+| Approach | Typical use |
+|----------|-------------|
+| **NeMo Guardrails** | Colang policies, dialog flows, third-party rails. |
+| **Guardrails AI** | Pydantic-style validators on LLM I/O. |
+| **Llama Guard / dedicated classifiers** | Stronger taxonomy-specific policies; host a small judge model. |
+| **Prompt-injection filters** | Separate classifier or heuristic on user text before it is concatenated with context. |
+| **Allow/deny topic lists** | Simple regex or keyword gates for your product domain. |
+| **Azure Content Safety**, **AWS Bedrock Guardrails** | Enterprise cloud policy APIs. |
+
+For production, combine **automated checks** (moderation / classifiers) with **evaluation** (e.g. red-team datasets in LangSmith and safety evaluators similar to your RAG metrics).
+
+---
+
 ## Troubleshooting
 
 | Issue | What to check |
