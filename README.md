@@ -15,7 +15,7 @@ This repo is a **single Jupyter notebook** that shows how to **evaluate LLM apps
 | **RAG pipeline** | Load web pages → chunk → embed → `InMemoryVectorStore` → retriever. |
 | **`rag_bot`** | Retrieves docs, calls `gpt-4o-mini`, returns `{"answer", "documents"}`. |
 | **RAG dataset** | Separate dataset (`rag_dataset_name`, e.g. `"Sahil Dataset name"`) with agent-themed Q&A. |
-| **RAG evaluators** | Correctness vs reference, relevance to question, groundedness vs retrieved text, retrieval relevance. |
+| **RAG evaluators** | Correctness, relevance, groundedness, retrieval relevance, **no-hallucination** (vs context), **coherence**. |
 | **RAG evaluation** | `rag_target` + `client.evaluate(..., data=rag_dataset_name, ...)`. |
 
 Run sections **in order** the first time: later cells depend on `client`, `retriever`, `llm`, `rag_bot`, and evaluator definitions.
@@ -58,8 +58,8 @@ The notebook sets `LANGSMITH_TRACING=true` so runs and LLM calls can appear in L
 2. **Cells 1–6** — Chatbot baseline: dataset **get-or-create** (avoids 409 if the name already exists), evaluators, `my_app`, `ls_target`, `evaluate` on `dataset_name` (`MychatBot`).  
 3. **Cells 7–11** — RAG: `USER_AGENT` for HTTP, `WebBaseLoader`, splitters, embeddings, `retriever`, `init_chat_model`, `@traceable` `rag_bot`.  
 4. **Cell 12** — RAG examples dataset: **get-or-create** by `rag_dataset_name`, `create_examples`.  
-5. **Cells 14–17** — RAG evaluators (structured outputs via `init_chat_model` + JSON schema).  
-6. **Cell 18** — `rag_target(inputs) → rag_bot(inputs["question"])`, `evaluate` with `data=rag_dataset_name`.
+5. **Cells 14–18** — RAG evaluators (structured outputs via `init_chat_model` + JSON schema), including hallucination and coherence.  
+6. **Cell 19** — `rag_target(inputs) → rag_bot(inputs["question"])`, `evaluate` with `data=rag_dataset_name`.
 
 **Important:** `groundedness` and `retrieval_relevance` read retrieved text from **`outputs["documents"]`** (what `rag_bot` returns), not from dataset inputs.
 
@@ -89,7 +89,9 @@ so re-running a dataset cell does not crash with **409 Conflict**.
 - **Correctness** — Answer vs gold reference (structured grader).  
 - **Relevance** — Answer vs user question.  
 - **Groundedness** — Answer supported by **retrieved** `Document.page_content`.  
-- **Retrieval relevance** — Retrieved chunks relevant to the question.
+- **Retrieval relevance** — Retrieved chunks relevant to the question.  
+- **No hallucination** — LLM flags concrete claims in the answer that are not supported by (or contradict) retrieved docs; score is **True** when no such hallucination is found.  
+- **Coherence** — Answer is internally consistent, readable, and on-topic (independent of factual grounding).
 
 Evaluators use the LangSmith signature **`(inputs, outputs, reference_outputs)`** (some allow optional `reference_outputs`).
 
